@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: jungle-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jungle
+      POSTGRES_PASSWORD: jungle_dev
+      POSTGRES_DB: jungle_challenge
+    ports:
+      - '5433:5432'
+    volumes:
+      - jungle_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL','pg_isready -U jungle -d jungle_challenge']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: jungle-localstack
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - '4566:4566'
+volumes:
+  jungle_postgres_data:
