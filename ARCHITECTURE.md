@@ -1,27 +1,3 @@
-<<<<<<< HEAD
-Arquitetura e decisões técnicas
-Visão geral
-Este projeto implementa uma API para processar transações de apostas e manter o saldo das carteiras dos jogadores. O foco foi evitar movimentações duplicadas, impedir saldo negativo e manter um histórico que permita conferir os valores registrados.
-
-A aplicação utiliza NestJS com TypeScript, Bun, PostgreSQL, MikroORM e SQS (simulado localmente pelo LocalStack). Existem duas formas de enviar uma transação: diretamente pela API HTTP ou por uma fila. Nos dois casos, o processamento financeiro é feito pelo mesmo serviço.
-
-É uma implementação para o desafio técnico, não um sistema pronto para produção.
-Valores monetários
-Os valores chegam à API como strings decimais, por exemplo "20.00". No código, são convertidos para centavos usando bigint, evitando erros de precisão com números de ponto flutuante. No PostgreSQL, os valores são armazenados como numeric(20,2).
-
-Cada carteira possui uma moeda, que precisa ser compatível com a moeda informada na transação.
-Processamento e concorrência
-As alterações de saldo acontecem dentro de transações do PostgreSQL. Antes de processar uma movimentação, o serviço usa SELECT ... FOR UPDATE para bloquear a linha da carteira envolvida.
-
-Assim, duas operações sobre a mesma carteira não alteram o saldo ao mesmo tempo. O bloqueio fica restrito à carteira utilizada, sem impedir movimentações em outras carteiras. O banco também possui uma restrição para impedir saldos negativos.
-Idempotência
-As transações exigem o cabeçalho Idempotency-Key. O banco possui restrições de unicidade para essa chave e para a combinação de provedor e identificador externo da transação.
-
-Se a mesma operação for recebida novamente com os mesmos dados, o serviço devolve o resultado já registrado, sem movimentar o saldo outra vez. Se a chave ou o identificador externo forem reutilizados com dados incompatíveis, a operação é recusada.
-Ledger e reconciliação
-Cada alteração de saldo cria um lançamento no ledger dentro da mesma transação do banco. O ledger registra o valor movimentado, a direção (CREDIT ou DEBIT) e os saldos anterior e posterior.
-
-A abertura de uma carteira com saldo positivo gera um lançamento OPENING. A operação LOSS, por sua vez, não altera o saldo nesta implementação.
 =======
 # Arquitetura e decisões técnicas
 
