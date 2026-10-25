@@ -2,108 +2,80 @@
 
 ## Visão geral
 
-Este projeto implementa uma API para processar transações de apostas e manter o saldo das carteiras dos jogadores. O foco foi evitar movimentações duplicadas, impedir saldo negativo e manter um histórico que permita conferir os valores registrados.
+O projeto é uma API para processar transações de apostas e manter o saldo das carteiras consistente. A implementação foi feita com NestJS, MikroORM e PostgreSQL, com uma opção de processamento assíncrono usando SQS via LocalStack.
 
-A aplicação utiliza NestJS com TypeScript, Bun, PostgreSQL, MikroORM e SQS (simulado localmente pelo LocalStack). Existem duas formas de enviar uma transação: diretamente pela API HTTP ou por uma fila. Nos dois casos, o processamento financeiro é feito pelo mesmo serviço.
+As prioridades foram evitar débitos duplicados, impedir saldo negativo e manter um histórico das movimentações para conferência. É uma solução para o escopo do desafio, não um serviço pronto para produção.
 
-É uma implementação para o desafio técnico, não um sistema pronto para produção.
+## Organização do projeto
+
+- **Wallet:** criação de carteiras e consulta de saldo.
+- **Wager:** validação e processamento de BET, WIN, LOSS, REFUND e ROLLBACK.
+- **Ledger:** registro das movimentações financeiras e reconciliação.
+- **Messaging:** envio e consumo de mensagens pelo SQS, além dos registros de inbox e outbox.
+- **Health:** endpoints para verificar a disponibilidade da aplicação e das dependências.
+
+Os controllers recebem as requisições HTTP e os services concentram o processamento e as regras de negócio. O MikroORM é utilizado para acessar o PostgreSQL.
 
 ## Valores monetários
 
-Os valores chegam à API como strings decimais, por exemplo `"20.00"`. No código, são convertidos para centavos usando `bigint`, evitando erros de precisão com números de ponto flutuante. No PostgreSQL, os valores são armazenados como `numeric(20,2)`.
+A API recebe valores como strings decimais, por exemplo `"20.00"`, para evitar erros de precisão com números de ponto flutuante. O módulo `money.ts` trabalha com centavos usando `bigint`, enquanto o banco armazena valores em colunas `numeric(20,2)`.
 
-Cada carteira possui uma moeda, que precisa ser compatível com a moeda informada na transação.
+A moeda da transação também é conferida com a moeda da carteira.
 
-## Processamento e concorrência
+## Consistência e concorrência
 
-As alterações de saldo acontecem dentro de transações do PostgreSQL. Antes de processar uma movimentação, o serviço usa `SELECT ... FOR UPDATE` para bloquear a linha da carteira envolvida.
+O processamento financeiro utiliza transações do banco de dados. Dessa forma, a atualização do saldo e o registro da movimentação precisam ser concluídos juntos.
 
-Assim, duas operações sobre a mesma carteira não alteram o saldo ao mesmo tempo. O bloqueio fica restrito à carteira utilizada, sem impedir movimentações em outras carteiras. O banco também possui uma restrição para impedir saldos negativos.
->>>>>>> 66e3b1e (docs: update architecture and format source code)
+Antes de alterar o saldo, o serviço usa `SELECT ... FOR UPDATE` para bloquear a linha da carteira durante a transação. Isso evita que duas apostas simultâneas leiam o mesmo saldo disponível e ambas sejam aprovadas indevidamente.
 
-Os lançamentos do ledger não podem ser editados ou excluídos. O endpoint de reconciliação soma créditos e débitos e compara o resultado com o saldo armazenado na carteira. Caso exista diferença, ela é informada, mas não corrigida automaticamente.
-Estornos e operações fora de ordem
-REFUND e ROLLBACK precisam indicar a transação original. O serviço confere a referência e valida informações como carteira, jogador, rodada, moeda e valor.
+O banco também possui uma restrição para impedir saldos negativos.
 
-<<<<<<< HEAD
-Quando a transação referenciada ainda não existe ou está pendente, a reversão fica com status PENDING_REFERENCE. O worker tenta processá-la novamente depois. Há um limite de tentativas, após o qual a operação pode ser rejeitada.
-Mensageria: SQS, inbox e outbox
-O LocalStack simula o SQS no ambiente local. A fila de entrada recebe as solicitações de transação e um consumidor as encaminha para o mesmo serviço utilizado pela API HTTP.
+## Idempotência
 
-A inbox registra as mensagens processadas para ajudar a evitar processamento duplicado. A outbox armazena eventos relacionados às operações financeiras dentro da transação do banco; posteriormente, um worker publica esses eventos no SQS.
+O endpoint de transações utiliza o header `Idempotency-Key`. A ideia é que, se a mesma requisição for enviada novamente, ela não gere outra movimentação financeira.
 
-O worker também trata tentativas de publicação e operações pendentes. Como mensagens podem ser entregues novamente, o processamento precisa continuar seguro diante de repetições.
-Autenticação
-A autenticação não foi implementada neste escopo. Em um ambiente de produção, os endpoints financeiros precisariam de autenticação, autorização e controle de acesso apropriados.
-Testes e validação local
-A aplicação foi executada localmente com Bun, PostgreSQL e LocalStack. Foram verificados manualmente os seguintes cenários:
-- Criação de carteira com saldo inicial.
-- Processamento de BET e WIN.
-- ROLLBACK de uma vitória.
-=======
-As transações exigem o cabeçalho `Idempotency-Key`. O banco possui restrições de unicidade para essa chave e para a combinação de provedor e identificador externo da transação.
+Além da chave, o sistema utiliza identificadores da transação externa e restrições de unicidade no PostgreSQL. Um hash do payload ajuda a identificar tentativas de reutilizar a mesma chave com dados diferentes.
 
-Se a mesma operação for recebida novamente com os mesmos dados, o serviço devolve o resultado já registrado, sem movimentar o saldo outra vez. Se a chave ou o identificador externo forem reutilizados com dados incompatíveis, a operação é recusada.
+Em uma repetição válida, a API devolve o resultado registrado no primeiro processamento.
 
 ## Ledger e reconciliação
 
-Cada alteração de saldo cria um lançamento no ledger dentro da mesma transação do banco. O ledger registra o valor movimentado, a direção (`CREDIT` ou `DEBIT`) e os saldos anterior e posterior.
+As alterações de saldo geram lançamentos no ledger. Esse histórico permite conferir quais operações contribuíram para o saldo de uma carteira.
 
-A abertura de uma carteira com saldo positivo gera um lançamento `OPENING`. A operação `LOSS`, por sua vez, não altera o saldo nesta implementação.
+A reconciliação compara o saldo armazenado com o resultado das movimentações registradas. Caso exista uma diferença, ela é informada; o processo não altera automaticamente o saldo.
 
-Os lançamentos do ledger não podem ser editados ou excluídos. O endpoint de reconciliação soma créditos e débitos e compara o resultado com o saldo armazenado na carteira. Caso exista diferença, ela é informada, mas não corrigida automaticamente.
+## Reversões e referências
 
-## Estornos e operações fora de ordem
+`REFUND` e `ROLLBACK` usam a transação original como referência. O serviço verifica os dados relacionados antes de aplicar a movimentação inversa.
 
-`REFUND` e `ROLLBACK` precisam indicar a transação original. O serviço confere a referência e valida informações como carteira, jogador, rodada, moeda e valor.
+Quando uma referência ainda não existe, a operação pode ficar pendente para nova tentativa. Isso permite lidar com algumas situações em que as mensagens chegam fora de ordem.
 
-Quando a transação referenciada ainda não existe ou está pendente, a reversão fica com status `PENDING_REFERENCE`. O worker tenta processá-la novamente depois. Há um limite de tentativas, após o qual a operação pode ser rejeitada.
+## Processamento assíncrono
 
-## Mensageria: SQS, inbox e outbox
+O projeto utiliza filas SQS FIFO disponibilizadas localmente pelo LocalStack. O consumidor encaminha as transações ao mesmo serviço responsável pelo processamento HTTP, evitando duplicar as regras financeiras.
 
-O LocalStack simula o SQS no ambiente local. A fila de entrada recebe as solicitações de transação e um consumidor as encaminha para o mesmo serviço utilizado pela API HTTP.
-
-A inbox registra as mensagens processadas para ajudar a evitar processamento duplicado. A outbox armazena eventos relacionados às operações financeiras dentro da transação do banco; posteriormente, um worker publica esses eventos no SQS.
-
-O worker também trata tentativas de publicação e operações pendentes. Como mensagens podem ser entregues novamente, o processamento precisa continuar seguro diante de repetições.
+A inbox registra mensagens recebidas e a outbox armazena eventos que precisam ser publicados após a transação. Como uma publicação pode ser repetida em situações de falha, consumidores desses eventos também devem tratar duplicações.
 
 ## Autenticação
 
-A autenticação não foi implementada neste escopo. Em um ambiente de produção, os endpoints financeiros precisariam de autenticação, autorização e controle de acesso apropriados.
+A autenticação não foi implementada neste desafio, conforme o escopo informado no enunciado. Em uma aplicação real, os endpoints financeiros precisariam de autenticação e autorização, além de controles adicionais de acesso às filas e aos serviços internos.
 
-## Testes e validação local
+## Validação realizada
 
-A aplicação foi executada localmente com Bun, PostgreSQL e LocalStack. Foram verificados manualmente os seguintes cenários:
+O projeto foi executado localmente com Bun, PostgreSQL e LocalStack. Foram verificados manualmente os fluxos de criação de carteira, BET, WIN, ROLLBACK, idempotência, reconciliação e processamento por fila.
 
-- Criação de carteira com saldo inicial.
-- Processamento de `BET` e `WIN`.
-- `ROLLBACK` de uma vitória.
->>>>>>> 66e3b1e (docs: update architecture and format source code)
-- Reenvio da mesma aposta, sem débito duplicado.
-- Consulta de saldo e reconciliação do ledger.
-- Envio de uma aposta para a fila SQS e processamento assíncrono pelo consumidor.
-- Verificação de saúde do PostgreSQL e do SQS.
-<<<<<<< HEAD
-Os testes unitários de valores monetários e os testes de integração disponíveis também foram executados sem erros no ambiente local.
-Limitações e melhorias futuras
-- Ainda faltam testes mais abrangentes de concorrência entre múltiplas instâncias da aplicação.
-- A inbox pode ser reforçada para tratar disputas entre consumidores simultâneos.
-- Publicadores concorrentes da outbox podem tentar enviar o mesmo evento; seria útil implementar uma estratégia de reserva dos registros, como SKIP LOCKED.
-- O consumidor não estende automaticamente o tempo de visibilidade de mensagens que demoram mais para processar.
-- Observabilidade pode ser ampliada com métricas, logs estruturados e tracing.
-- Os mapeamentos do MikroORM podem evoluir para um modelo de domínio mais encapsulado.
-=======
+Também foram executados com sucesso:
 
-Os testes unitários de valores monetários e os testes de integração disponíveis também foram executados sem erros no ambiente local.
+- `bunx tsc --noEmit` — verificação de tipos.
+- `bunx vitest run` — quatro testes unitários.
+- `bunx vitest run --config vitest.config.e2e.ts` — dois testes de integração, incluindo apostas simultâneas e repetição de chave idempotente.
 
 ## Limitações e melhorias futuras
 
-- Ainda faltam testes mais abrangentes de concorrência entre múltiplas instâncias da aplicação.
-- A inbox pode ser reforçada para tratar disputas entre consumidores simultâneos.
-- Publicadores concorrentes da outbox podem tentar enviar o mesmo evento; seria útil implementar uma estratégia de reserva dos registros, como `SKIP LOCKED`.
-- O consumidor não estende automaticamente o tempo de visibilidade de mensagens que demoram mais para processar.
-- Observabilidade pode ser ampliada com métricas, logs estruturados e tracing.
-- Os mapeamentos do MikroORM podem evoluir para um modelo de domínio mais encapsulado.
+- Reforçar o controle de concorrência da inbox e da publicação da outbox quando houver múltiplos workers.
+- Adicionar testes com múltiplas instâncias da aplicação e simulações de indisponibilidade de infraestrutura.
+- Melhorar a observabilidade com logs estruturados, métricas e rastreamento de requisições.
+- Tratar processos muito longos no consumidor SQS, incluindo renovação do tempo de visibilidade das mensagens.
+- Evoluir o encapsulamento das entidades e regras de domínio.
 
->>>>>>> 66e3b1e (docs: update architecture and format source code)
-Esses pontos não impedem os fluxos básicos demonstrados, mas precisam ser considerados antes de utilizar a solução em produção.
+Esses pontos não impedem a demonstração dos fluxos principais, mas seriam importantes antes de utilizar a solução em produção.
