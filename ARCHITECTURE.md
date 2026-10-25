@@ -1,4 +1,3 @@
-=======
 # Arquitetura e decisões técnicas
 
 ## Visão geral
